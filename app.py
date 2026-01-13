@@ -1,53 +1,18 @@
-
-# ============================
-# INICIO: Librerías
-# - Orden de carga intencional:
-#   1) Computación y tiempo (numpy, time)
-#   2) Visión (cv2)
-#   3) Web (streamlit)
-#   4) Modelo IA (ultralytics.YOLO)
-#   5) Audio (pygame), con fallback seguro
-#   Motivo: mantener inicialización predecible y mensajes claros en caso de fallos.
-# ============================
-import cv2
 import time
+import queue
 import numpy as np
+import cv2
+import av
 import streamlit as st
 from ultralytics import YOLO
+from streamlit_webrtc import webrtc_streamer, VideoTransformerBase, WebRtcMode
 
-# ============================
-# INPUT: Variables y parámetros iniciales
-# Propósito pedagógico:
-# - Declarar explícitamente cada recurso (audio, IA, cámara, focal)
-# - Documentar supuestos y límites (clases, alturas, umbrales, NA)
-# - Asegurar trazabilidad para no videntes mediante resumen textual consistente.
-# ============================
-
-# --- Audio ---
-# - AUDIO_ENABLED controla si se intentará reproducir pitidos (accesibilidad auditiva).
-# - BEEP_FILE es el recurso de sonido (mono, corto, no intrusivo).
-# - La inicialización de pygame usa parámetros conservadores para baja latencia.
-# - Si falla cualquier paso (archivo ausente, mixer no disponible), se desactiva audio
-#   sin romper el flujo principal (detección y visualización continúan).
-AUDIO_ENABLED = True
-BEEP_FILE = "beep.wav"
-try:
-    import pygame
-    pygame.mixer.init(frequency=44100, size=-16, channels=1, buffer=512)
-    beep_sound = pygame.mixer.Sound(BEEP_FILE)
-except Exception:
-    AUDIO_ENABLED = False
-    beep_sound = None
-
-# --- Modelo YOLO ---
-# - yolov8s.pt: modelo liviano para tiempo real en CPU; ajusta a "n" o "m" según hardware.
-# - verbose se controla más adelante para no llenar la interfaz.
+# -------------------------
+# Configuración y estado
+# -------------------------
+st.set_page_config(page_title="Proximidad accesible", layout="wide")
 model = YOLO("yolov8s.pt")
 
-# --- Clases relevantes con alturas arbitrarias de ejemplo ---
-# - size_m: dimensión real aproximada para inferir distancia (pinhole).
-# - axis: eje de medición preferente (height por estabilidad en pedestres).
-# - Nota: Son valores pedagógicos; en producción calibrar por clase y cámara.
 CLASS_REAL_SIZE = {
     "person": {"size_m": 1.65, "axis": "height"},
     "car": {"size_m": 1.80, "axis": "height"},
@@ -57,281 +22,193 @@ CLASS_REAL_SIZE = {
     "bicycle": {"size_m": 1.60, "axis": "height"},
 }
 TARGET_CLASSES = set(CLASS_REAL_SIZE.keys())
-
-# --- Ajuste focal ---
-# - STATE["focal_px"] proviene de una calibración previa (pinhole).
-# - Mantener en estado global para trazabilidad y actualización futura.
 STATE = {"focal_px": 327.62}
 
-# --- Control de audio ---
-# - last_beep_time evita saturación auditiva. Intervalos dependen de distancia y tipo.
-last_beep_time = 0.0
+# Audio online (WebRTC/Streamlit): generamos un beep sintético y lo reproducimos con st.audio
+# Nota: reproducción depende del navegador; se intenta no saturar.
+def generate_beep(sr=44100, duration=0.15, freq=880):
+    t = np.linspace(0, duration, int(sr * duration), False)
+    wave = 0.5 * np.sin(2 * np.pi * freq * t)
+    # Fade in/out para evitar clicks
+    fade = np.linspace(0, 1, int(sr * 0.02))
+    wave[:fade.size] *= fade
+    wave[-fade.size:] *= fade[::-1]
+    # Convertir a bytes WAV simple
+    import io, wave as wav
+    buf = io.BytesIO()
+    with wav.open(buf, "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(sr)
+        wf.writeframes((wave * 32767).astype(np.int16).tobytes())
+    return buf.getvalue()
 
-# ============================
-# DEFINIR OPERACIONES: Funciones auxiliares
-# Diseño:
-# - Cada función tiene responsabilidad única y comentarios de entrada/salida.
-# - No lanzan excepciones (devuelven None o silencian), para continuidad pedagógica.
-# ============================
+BEEP_WAV = generate_beep()
 
+# -------------------------
+# Utilidades de cálculo
+# -------------------------
 def pick_axis_size(box, axis="height"):
-    """
-    Devuelve el tamaño del eje solicitado a partir de una caja (x1, y1, x2, y2).
-
-    Parámetros:
-    - box: tupla (x1, y1, x2, y2) en píxeles
-    - axis: "height" o "width"
-
-    Retorna:
-    - int tamaño en px, mínimo 1 para evitar división por cero.
-
-    Justificación:
-    - height es más estable para personas. width puede variar por pose/inclinación.
-    """
     x1, y1, x2, y2 = box
     w = max(1, x2 - x1)
     h = max(1, y2 - y1)
     return w if axis == "width" else h
 
 def estimate_distance(size_px, H_real_m, focal_px):
-    """
-    Calcula distancia aproximada con cámara pinhole:
-    D ≈ (H_real_m * focal_px) / size_px
-
-    Parámetros:
-    - size_px: tamaño en píxeles del eje elegido
-    - H_real_m: altura (o ancho) real mapeada a la clase
-    - focal_px: distancia focal efectiva en píxeles (calibrada)
-
-    Retorna:
-    - float con metros, o None si no es posible calcular (evita fallos).
-    """
     if focal_px <= 0 or size_px <= 0:
         return None
     return (H_real_m * focal_px) / size_px
 
-def beep_progresivo(D, tipo):
-    """
-    Genera pitido progresivo según distancia y tipo de objeto.
-    Políticas:
-    - Personas: umbrales más sensibles (proximidad crítica a 2 m).
-    - Vehículos: umbrales más amplios (proximidad crítica a 3 m).
-    - Se limita la frecuencia de pitidos con last_beep_time.
+# -------------------------
+# Procesador de video WebRTC
+# -------------------------
+class VideoProcessor(VideoTransformerBase):
+    def __init__(self):
+        self.last_beep_time = 0.0
+        self.summary_queue = queue.Queue(maxsize=1)
 
-    Seguridad:
-    - Si AUDIO_ENABLED es False o D es None, no hace nada.
-    - Cualquier excepción en el mixer se silencia.
-
-    Accesibilidad:
-    - Volumen y ritmo aumentan cuando el objeto se acerca, para clara percepción auditiva.
-    """
-    global last_beep_time
-    if not AUDIO_ENABLED or D is None:
-        return
-    now = time.time()
-    if tipo == "person":
-        if D > 10: return
-        if D > 5: interval, vol = 1.0, 0.2
-        elif D > 2: interval, vol = 0.6, 0.5
-        else: interval, vol = 0.3, 0.9
-    else:
-        if D > 10: return
-        if D > 6: interval, vol = 1.0, 0.3
-        elif D > 3: interval, vol = 0.6, 0.6
-        else: interval, vol = 0.3, 0.9
-    if now - last_beep_time < interval:
-        return
-    last_beep_time = now
-    try:
-        if beep_sound is not None:
-            beep_sound.set_volume(vol)
-            beep_sound.play()
-    except Exception:
-        pass
-
-def auto_camera_index(max_test=3):
-    """
-    Detecta automáticamente la primera cámara disponible.
-    - Prueba índices [0..max_test-1].
-    - Retorna el índice o None si no hay cámara.
-
-    Motivo:
-    - Facilitar despliegue en distintos equipos sin configuración manual.
-    """
-    for i in range(max_test):
-        cap = cv2.VideoCapture(i)
-        if cap.isOpened():
-            cap.release()
-            return i
-    return None
-
-# ============================
-# PROCESO DE LAS OPERACIONES: Detección y cálculo
-# - Enfocado en mantener tiempo real y trazabilidad textual.
-# - Políticas de descarte:
-#   * conf < 0.70: no se contabiliza ni se muestra (pedagógicamente coherente).
-#   * cls fuera de TARGET_CLASSES: se ignora (evita ruido).
-# - Reporte:
-#   * Siempre mostrar distancias aceptadas; si se descarta no se reporta (consistencia).
-# - Alarmas:
-#   * Persona: D < 2 m, o caja dominante (ratio_w > 0.45 o ratio_h > 0.60).
-#   * Vehículo: D < 3 m, o ratio_h > 0.60 (ocupa gran parte de pantalla).
-# ============================
-
-def procesar(frame, frame_count):
-    """
-    Ejecuta inferencia, calcula distancias, decide color y arma resumen textual.
-
-    Retorna:
-    - annotated: imagen con cajas y etiquetas coloreadas
-    - resumen_text: texto multi-línea con conteos, distancias y estado de alarma
-    """
-    results = model(frame, imgsz=320, verbose=False)[0]
-    annotated = frame.copy()
-    resumen = []
-    fpx = STATE["focal_px"]
-    h_img, w_img = frame.shape[:2]
-    alarma = False
-    count_personas, count_vehiculos = 0, 0
-    distancias_personas, distancias_vehiculos = [], []
-
-    # ============================
-    # PROCESO DE DECISIÓN: Condiciones y bucles
-    # ============================
-    for box in results.boxes:
-        cls = model.names[int(box.cls)]
-        conf = float(box.conf)
-
-        # 1) Filtro por confianza y clase de interés
-        if conf < 0.70 or cls not in TARGET_CLASSES:
-            # No se reporta para evitar contradicciones en salida
-            continue
-
-        # 2) Calcular distancia con pinhole, usando eje recomendado por clase
-        x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
-        axis = CLASS_REAL_SIZE[cls]["axis"]
-        H_real = CLASS_REAL_SIZE[cls]["size_m"]
-        size_px = pick_axis_size((x1, y1, x2, y2), axis)
-        D = estimate_distance(size_px, H_real, fpx)
-
-        # 3) Calcular zona horizontal (izquierda/centro/derecha) para orientación auditiva/textual
-        cx = (x1 + x2) // 2
-        if cx < w_img / 3:
-            zona = "izquierda"
-        elif cx < 2 * w_img / 3:
-            zona = "centro"
+    def _beep_progresivo(self, D, tipo):
+        if D is None:
+            return False
+        now = time.time()
+        if tipo == "person":
+            if D > 10: return False
+            if D > 5: interval = 1.0
+            elif D > 2: interval = 0.6
+            else: interval = 0.3
         else:
-            zona = "derecha"
+            if D > 10: return False
+            if D > 6: interval = 1.0
+            elif D > 3: interval = 0.6
+            else: interval = 0.3
+        if now - self.last_beep_time < interval:
+            return False
+        self.last_beep_time = now
+        return True  # señal para reproducir beep en la UI
 
-        # 4) Ratios relativos (tamaño de caja respecto a la imagen)
-        #    Ayudan a detectar ocupación dominante aunque D sea None (por geometría o oclusión).
-        box_width = x2 - x1
-        ratio_w = box_width / w_img
-        box_height = y2 - y1
-        ratio_h = box_height / h_img
+    def transform(self, frame: av.VideoFrame) -> av.VideoFrame:
+        img = frame.to_ndarray(format="bgr24")
+        results = model(img, imgsz=320, verbose=False)[0]
 
-        # 5) Decisiones por tipo
-        if cls == "person":
-            count_personas += 1
+        annotated = img.copy()
+        resumen = []
+        fpx = STATE["focal_px"]
+        h_img, w_img = img.shape[:2]
+        alarma = False
+        count_personas, count_vehiculos = 0, 0
+        distancias_personas, distancias_vehiculos = [], []
+        trigger_beep = False
+
+        for box in results.boxes:
+            cls = model.names[int(box.cls)]
+            conf = float(box.conf)
+            if conf < 0.70 or cls not in TARGET_CLASSES:
+                continue
+
+            x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
+            axis = CLASS_REAL_SIZE[cls]["axis"]
+            H_real = CLASS_REAL_SIZE[cls]["size_m"]
+            size_px = pick_axis_size((x1, y1, x2, y2), axis)
+            D = estimate_distance(size_px, H_real, fpx)
+
+            cx = (x1 + x2) // 2
+            if cx < w_img / 3:
+                zona = "izquierda"
+            elif cx < 2 * w_img / 3:
+                zona = "centro"
+            else:
+                zona = "derecha"
+
+            box_width = x2 - x1
+            ratio_w = box_width / w_img
+            box_height = y2 - y1
+            ratio_h = box_height / h_img
+
+            if cls == "person":
+                count_personas += 1
+                if D is not None:
+                    distancias_personas.append(D)
+                    if self._beep_progresivo(D, "person"):
+                        trigger_beep = True
+                if (D is not None and D < 2.0) or ratio_w > 0.45 or ratio_h > 0.60:
+                    alarma = True
+            else:
+                count_vehiculos += 1
+                if D is not None:
+                    distancias_vehiculos.append(D)
+                    if self._beep_progresivo(D, "vehiculo"):
+                        trigger_beep = True
+                if (D is not None and D < 3.0) or ratio_h > 0.60:
+                    alarma = True
+
+            color = (0, 255, 0)
             if D is not None:
-                distancias_personas.append(D)
-                beep_progresivo(D, "person")
-            # Persona: alarma si D < 2 m o si ocupa área significativa
-            if (D is not None and D < 2.0) or ratio_w > 0.45 or ratio_h > 0.60:
-                alarma = True
-        else:
-            count_vehiculos += 1
-            if D is not None:
-                distancias_vehiculos.append(D)
-                # Nota: usamos "vehiculo" para la lógica interna de audio (no afecta visual)
-                beep_progresivo(D, "vehiculo")
-            # Vehículo: alarma si D < 3 m o si ocupa vertical dominante
-            if (D is not None and D < 3.0) or ratio_h > 0.60:
-                alarma = True
+                if (cls == "person" and D < 2) or (cls != "person" and D < 3):
+                    color = (0, 0, 255)
+                elif (cls == "person" and D < 5) or (cls != "person" and D < 6):
+                    color = (0, 165, 255)
+                elif D < 10:
+                    color = (0, 255, 255)
 
-        # 6) Color según proximidad (verde/amarillo/naranja/rojo)
-        #    - Rojo: crítico, umbral por tipo
-        #    - Naranja: media proximidad
-        #    - Amarillo: lejana pero relevante
-        #    - Verde: seguro
-        color = (0, 255, 0)
-        if D is not None:
-            if (cls == "person" and D < 2) or (cls != "person" and D < 3):
-                color = (0, 0, 255)          # rojo
-            elif (cls == "person" and D < 5) or (cls != "person" and D < 6):
-                color = (0, 165, 255)        # naranja
-            elif D < 10:
-                color = (0, 255, 255)        # amarillo
+            cv2.rectangle(annotated, (x1, y1), (x2, y2), color, 2)
+            label = f"{cls} {conf:.2f} | {D if D is not None else 'NA'}m | {zona}"
+            cv2.putText(annotated, label, (x1, max(0, y1 - 10)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+            resumen.append(label)
 
-        # ============================
-        # RESULTADOS parciales (visual + texto)
-        # ============================
-        cv2.rectangle(annotated, (x1, y1), (x2, y2), color, 2)
-        label = f"{cls} {conf:.2f} | {D if D is not None else 'NA'}m | {zona}"
-        cv2.putText(annotated, label, (x1, max(0, y1 - 10)),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
-        resumen.append(label)
+        if alarma:
+            resumen.append("🚨 ALARMA: objeto o señal cerca")
+        resumen.append(f"👥 Personas: {count_personas}")
+        if distancias_personas:
+            resumen.append("   Distancias: " + ", ".join(f"{d:.2f}m" for d in distancias_personas))
+        resumen.append(f"🚗 Vehículos: {count_vehiculos}")
+        if distancias_vehiculos:
+            resumen.append("   Distancias: " + ", ".join(f"{d:.2f}m" for d in distancias_vehiculos))
+        if not resumen:
+            resumen = ["❓ Nada detectado"]
 
-    # ============================
-    # DECISIÓN: RESULTADOS finales (texto accesible)
-    # - Siempre incluir conteos por tipo.
-    # - Listar distancias aceptadas (no incluir descartadas).
-    # - Mensaje de alarma dinámico (solo si alguna condición se activó).
-    # ============================
-    if alarma:
-        resumen.append("🚨 ALARMA: objeto o señal cerca")
-    resumen.append(f"👥 Personas: {count_personas}")
-    if distancias_personas:
-        resumen.append("   Distancias: " + ", ".join(f"{d:.2f}m" for d in distancias_personas))
-    resumen.append(f"🚗 Vehículos: {count_vehiculos}")
-    if distancias_vehiculos:
-        resumen.append("   Distancias: " + ", ".join(f"{d:.2f}m" for d in distancias_vehiculos))
-    if not resumen:
-        resumen = ["❓ Nada detectado"]
+        # Publicar resumen y señal de beep a la UI
+        try:
+            while not self.summary_queue.empty():
+                self.summary_queue.get_nowait()
+            self.summary_queue.put({"text": "\n".join(resumen), "beep": trigger_beep})
+        except queue.Full:
+            pass
 
-    return annotated, "\n".join(resumen)
+        return av.VideoFrame.from_ndarray(annotated, format="bgr24")
 
+# -------------------------
+# Interfaz Web
+# -------------------------
+st.title("Detector de proximidad accesible — cámara del navegador (WebRTC)")
 
-# ============================
-# OUTPUT: Visualización y control en web (STREAMLIT)
-# Estructura:
-# - header: contexto de cámara del servidor
-# - placeholders: imagen y texto con actualización en bucle
-# - control: checkbox para iniciar/detener
-# Robustez:
-# - Mensajes de error/advertencia claros (no bloquean app completa)
-# - Release de recursos al finalizar
-# ============================
+col1, col2 = st.columns([2, 1])
+with col1:
+    webrtc_ctx = webrtc_streamer(
+        key="proximidad-webrtc",
+        mode=WebRtcMode.SENDRECV,
+        video_processor_factory=VideoProcessor,
+        media_stream_constraints={"video": True, "audio": False},
+    )
 
-st.header("Cámara del servidor (compartida)")
-frame_placeholder = st.empty()
-text_placeholder = st.empty()
+with col2:
+    st.subheader("Resumen")
+    summary_box = st.empty()
+    beep_box = st.empty()
 
-# Detección automática de cámara (entorno local/servidor)
-cam_index = auto_camera_index()
-if cam_index is None:
-    st.error("⚠️ No se encontró ninguna cámara disponible")
-else:
-    cap = cv2.VideoCapture(cam_index)
-    run = st.checkbox("Iniciar cámara")
-
-    frame_count = 0
-    while run:
-        ret, frame = cap.read()
-        if not ret:
-            st.warning("⚠️ No se pudo acceder a la cámara")
+# Loop de UI para leer resumen/beep del procesador
+if webrtc_ctx and webrtc_ctx.video_processor:
+    vp = webrtc_ctx.video_processor
+    # Actualización suave del panel de resumen
+    while True:
+        try:
+            data = vp.summary_queue.get(timeout=0.2)
+        except queue.Empty:
             break
+        summary_box.text(data["text"])
+        if data.get("beep"):
+            # Reproducir beep sintético (dependiente del navegador)
+            beep_box.audio(BEEP_WAV, format="audio/wav", start_time=0)
 
-        # OUTPUT EN LA WEB
-        annotated, resumen = procesar(frame, frame_count)
-        # Convertimos BGR->RGB para visualización correcta en web
-        frame_placeholder.image(cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB))
-        # Texto accesible con decisiones y distancias
-        text_placeholder.text(resumen)
 
-        frame_count += 1
-
-    # Liberación de recursos (cámara y ventanas)
-    cap.release()
-    cv2.destroyAllWindows()
 
