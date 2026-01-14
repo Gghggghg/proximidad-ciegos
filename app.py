@@ -196,8 +196,4 @@ with col1:
         },
         video_html_attrs={
             "autoPlay": True,
-            "muted": True,
-            "playsinline": True,
-            "controls": False
-        },
-
+            "muted
