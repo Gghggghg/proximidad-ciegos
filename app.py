@@ -10,7 +10,7 @@ from streamlit_webrtc import webrtc_streamer, VideoTransformerBase, WebRtcMode
 st.set_page_config(page_title="Proximidad accesible", layout="wide")
 st.title("Detector de proximidad — cámara del navegador (en vivo)")
 
-# Modelo y warmup
+# Modelo YOLO (usa yolov8n para menor latencia)
 model = YOLO("yolov8n.pt")
 model.to("cpu")
 _ = model.predict(np.zeros((480, 640, 3), dtype=np.uint8), imgsz=320, verbose=False)
@@ -58,7 +58,7 @@ class VideoProcessor(VideoTransformerBase):
     def __init__(self):
         self.last_beep_time = 0.0
         self.summary_queue = queue.Queue(maxsize=1)
-        self.frame_skip = 1  # sube a 2 si necesitas más FPS
+        self.frame_skip = 1
         self._counter = 0
 
     def _beep_progresivo(self, D, tipo):
@@ -181,46 +181,15 @@ with col1:
         key="proximidad-webrtc",
         mode=WebRtcMode.SENDRECV,
         video_processor_factory=VideoProcessor,
-        async_transform=True,  # evita bloqueo: frames siguen llegando mientras se procesa
+        async_transform=True,  # procesamiento asíncrono
         media_stream_constraints={
             "video": {
-                "width": {"ideal": 960},   # sube calidad; baja a 640 si el móvil sufre
-                "height": {"ideal": 540},
-                "frameRate": {"ideal": 24, "max": 30},
-                "facingMode": "environment"  # cámara trasera en móviles
+                "width": {"ideal": 1280},
+                "height": {"ideal": 720},
+                "frameRate": {"ideal": 30, "max": 30},
+                "facingMode": "environment"
             },
             "audio": False,
-        },
-        rtc_configuration={
-            "iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]
-        },
-        video_html_attrs={
-            "autoPlay": True,
-            "muted": True,
-            "playsinline": True,
-            "controls": False
-        },
-    )
-
-with col2:
-    st.subheader("Resumen en tiempo real")
-    summary_box = st.empty()
-    beep_box = st.empty()
-    st.caption("Permite acceso a la cámara. Usa HTTPS y un navegador moderno (Chrome/Edge/Firefox).")
-
-if webrtc_ctx and webrtc_ctx.state.playing and webrtc_ctx.video_processor:
-    vp = webrtc_ctx.video_processor
-    while True:
-        try:
-            data = vp.summary_queue.get(timeout=0.2)
-        except queue.Empty:
-            break
-        summary_box.text(data["text"])
-        if data.get("beep"):
-            beep_box.audio(BEEP_WAV, format="audio/wav", start_time=0)
-else:
-    st.warning("Esperando cámara… Asegúrate de permitir permisos y que el sitio esté en HTTPS.")
-
 
 
 
