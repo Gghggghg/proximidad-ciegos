@@ -7,16 +7,13 @@ import streamlit as st
 from ultralytics import YOLO
 from streamlit_webrtc import webrtc_streamer, VideoTransformerBase, WebRtcMode
 
-# -------------------------
-# Configuración
-# -------------------------
 st.set_page_config(page_title="Proximidad accesible", layout="wide")
 st.title("Detector de proximidad — cámara del navegador (en vivo)")
 
-# Modelo (usa n para menor latencia)
-model = YOLO("yolov8n.pt")  # cambia a yolov8s.pt si tu CPU lo soporta
-# Opcional: forzar CPU (Cloud no tiene GPU)
+# Modelo y warmup
+model = YOLO("yolov8n.pt")
 model.to("cpu")
+_ = model.predict(np.zeros((480, 640, 3), dtype=np.uint8), imgsz=320, verbose=False)
 
 CLASS_REAL_SIZE = {
     "person": {"size_m": 1.65, "axis": "height"},
@@ -29,7 +26,6 @@ CLASS_REAL_SIZE = {
 TARGET_CLASSES = set(CLASS_REAL_SIZE.keys())
 STATE = {"focal_px": 327.62}
 
-# Beep sintético para navegador
 def generate_beep(sr=44100, duration=0.12, freq=880):
     t = np.linspace(0, duration, int(sr * duration), False)
     wave = 0.5 * np.sin(2 * np.pi * freq * t)
@@ -47,7 +43,6 @@ def generate_beep(sr=44100, duration=0.12, freq=880):
 
 BEEP_WAV = generate_beep()
 
-# Utilidades
 def pick_axis_size(box, axis="height"):
     x1, y1, x2, y2 = box
     w = max(1, x2 - x1)
@@ -59,14 +54,11 @@ def estimate_distance(size_px, H_real_m, focal_px):
         return None
     return (H_real_m * focal_px) / size_px
 
-# -------------------------
-# Procesador de video WebRTC
-# -------------------------
 class VideoProcessor(VideoTransformerBase):
     def __init__(self):
         self.last_beep_time = 0.0
         self.summary_queue = queue.Queue(maxsize=1)
-        self.frame_skip = 1  # procesa todos los frames; sube a 2–3 si necesitas más FPS
+        self.frame_skip = 1  # sube a 2 si necesitas más FPS
         self._counter = 0
 
     def _beep_progresivo(self, D, tipo):
@@ -89,16 +81,13 @@ class VideoProcessor(VideoTransformerBase):
         return True
 
     def transform(self, frame: av.VideoFrame) -> av.VideoFrame:
-        # Forzar cámara del navegador (no video de muestra)
         img = frame.to_ndarray(format="bgr24")
 
-        # Frame skipping para latencia
         self._counter += 1
         if self._counter % self.frame_skip != 0:
             return frame
 
-        # Inferencia YOLO
-        results = model(img, imgsz=320, verbose=False)[0]  # baja imgsz si necesitas más FPS
+        results = model(img, imgsz=320, verbose=False)[0]
         annotated = img.copy()
 
         resumen = []
@@ -186,34 +175,40 @@ class VideoProcessor(VideoTransformerBase):
 
         return av.VideoFrame.from_ndarray(annotated, format="bgr24")
 
-# -------------------------
-# UI: video + resumen + beep
-# -------------------------
 col1, col2 = st.columns([2, 1])
 with col1:
     webrtc_ctx = webrtc_streamer(
         key="proximidad-webrtc",
-        mode=WebRtcMode.SENDRECV,  # cámara del navegador en vivo
+        mode=WebRtcMode.SENDRECV,
         video_processor_factory=VideoProcessor,
+        async_transform=True,  # evita bloqueo: frames siguen llegando mientras se procesa
         media_stream_constraints={
             "video": {
-                "width": {"ideal": 640},
-                "height": {"ideal": 480},
+                "width": {"ideal": 960},   # sube calidad; baja a 640 si el móvil sufre
+                "height": {"ideal": 540},
                 "frameRate": {"ideal": 24, "max": 30},
+                "facingMode": "environment"  # cámara trasera en móviles
             },
             "audio": False,
         },
-        video_html_attrs={"controls": False, "autoPlay": True},
+        rtc_configuration={
+            "iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]
+        },
+        video_html_attrs={
+            "autoPlay": True,
+            "muted": True,
+            "playsinline": True,
+            "controls": False
+        },
     )
 
 with col2:
     st.subheader("Resumen en tiempo real")
     summary_box = st.empty()
     beep_box = st.empty()
-    st.caption("Si no ves tu cámara, permite acceso en el navegador y usa HTTPS.")
+    st.caption("Permite acceso a la cámara. Usa HTTPS y un navegador moderno (Chrome/Edge/Firefox).")
 
-# Loop de UI para leer resumen/beep del procesador
-if webrtc_ctx and webrtc_ctx.video_processor:
+if webrtc_ctx and webrtc_ctx.state.playing and webrtc_ctx.video_processor:
     vp = webrtc_ctx.video_processor
     while True:
         try:
@@ -223,6 +218,9 @@ if webrtc_ctx and webrtc_ctx.video_processor:
         summary_box.text(data["text"])
         if data.get("beep"):
             beep_box.audio(BEEP_WAV, format="audio/wav", start_time=0)
+else:
+    st.warning("Esperando cámara… Asegúrate de permitir permisos y que el sitio esté en HTTPS.")
+
 
 
 
