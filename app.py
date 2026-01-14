@@ -10,7 +10,7 @@ from streamlit_webrtc import webrtc_streamer, VideoTransformerBase, WebRtcMode
 st.set_page_config(page_title="Proximidad accesible", layout="wide")
 st.title("Detector de proximidad — cámara del navegador (en vivo)")
 
-# Modelo YOLO (usa yolov8n para menor latencia)
+# Modelo YOLO (usa yolov8n para menor latencia en Cloud)
 model = YOLO("yolov8n.pt")
 model.to("cpu")
 _ = model.predict(np.zeros((480, 640, 3), dtype=np.uint8), imgsz=320, verbose=False)
@@ -181,7 +181,7 @@ with col1:
         key="proximidad-webrtc",
         mode=WebRtcMode.SENDRECV,
         video_processor_factory=VideoProcessor,
-        async_transform=True,  # procesamiento asíncrono
+        async_transform=True,
         media_stream_constraints={
             "video": {
                 "width": {"ideal": 1280},
@@ -190,7 +190,18 @@ with col1:
                 "facingMode": "environment"
             },
             "audio": False,
+        },
+        rtc_configuration={
+            "iceServers": [{"urls": ["stun:stun.l.google.com:19302"}]}
+        },
+        video_html_attrs={
+            "autoPlay": True,
+            "muted": True,
+            "playsinline": True,
+            "controls": False
+        },
+    )
 
-
-
-
+with col2:
+    st.subheader("Resumen en tiempo real")
+    summary_box =
