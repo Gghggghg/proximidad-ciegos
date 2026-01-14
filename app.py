@@ -192,7 +192,7 @@ with col1:
             "audio": False,
         },
         rtc_configuration={
-            "iceServers": [{"urls": ["stun:stun.l.google.com:19302"}]}
+            "iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]
         },
         video_html_attrs={
             "autoPlay": True,
@@ -200,8 +200,4 @@ with col1:
             "playsinline": True,
             "controls": False
         },
-    )
 
-with col2:
-    st.subheader("Resumen en tiempo real")
-    summary_box =
