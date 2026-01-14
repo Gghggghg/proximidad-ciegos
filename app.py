@@ -6,11 +6,12 @@ import av
 import streamlit as st
 from ultralytics import YOLO
 from streamlit_webrtc import webrtc_streamer, VideoTransformerBase, WebRtcMode
+from concurrent.futures import ThreadPoolExecutor
 
 st.set_page_config(page_title="Proximidad accesible", layout="wide")
 st.title("Detector de proximidad — cámara del navegador (en vivo)")
 
-# Modelo YOLO (usa yolov8n para menor latencia en Cloud)
+# Modelo YOLO (nano, imgsz=320 para buena calidad)
 model = YOLO("yolov8n.pt")
 model.to("cpu")
 _ = model.predict(np.zeros((480, 640, 3), dtype=np.uint8), imgsz=320, verbose=False)
@@ -55,10 +56,11 @@ def estimate_distance(size_px, H_real_m, focal_px):
     return (H_real_m * focal_px) / size_px
 class VideoProcessor(VideoTransformerBase):
     def __init__(self):
-        self.last_beep_time = 0.0
+        self.executor = ThreadPoolExecutor(max_workers=1)
+        self.future = None
+        self.last_result = None
         self.summary_queue = queue.Queue(maxsize=1)
-        self.frame_skip = 1
-        self._counter = 0
+        self.last_beep_time = 0.0
 
     def _beep_progresivo(self, D, tipo):
         if D is None:
@@ -79,13 +81,7 @@ class VideoProcessor(VideoTransformerBase):
         self.last_beep_time = now
         return True
 
-    def transform(self, frame: av.VideoFrame) -> av.VideoFrame:
-        img = frame.to_ndarray(format="bgr24")
-
-        self._counter += 1
-        if self._counter % self.frame_skip != 0:
-            return frame
-
+    def _process_frame(self, img):
         results = model(img, imgsz=320, verbose=False)[0]
         annotated = img.copy()
 
@@ -172,7 +168,17 @@ class VideoProcessor(VideoTransformerBase):
         except queue.Full:
             pass
 
-        return av.VideoFrame.from_ndarray(annotated, format="bgr24")
+        self.last_result = annotated
+
+    def transform(self, frame: av.VideoFrame) -> av.VideoFrame:
+        img = frame.to_ndarray(format="bgr24")
+        if self.future is None or self.future.done():
+            self.future = self.executor.submit(self._process_frame, img.copy())
+        # Devuelve el último resultado procesado si existe, si no el frame original
+        if self.last_result is not None:
+            return av.VideoFrame.from_ndarray(self.last_result, format="bgr24")
+        else:
+            return frame
 col1, col2 = st.columns([2, 1])
 with col1:
     webrtc_ctx = webrtc_streamer(
@@ -218,4 +224,5 @@ if webrtc_ctx and webrtc_ctx.state.playing and webrtc_ctx.video_processor:
             beep_box.audio(BEEP_WAV, format="audio/wav", start_time=0)
 else:
     st.warning("Esperando cámara… Asegúrate de permitir permisos y que el sitio esté en HTTPS.")
+
 
