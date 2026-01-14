@@ -82,6 +82,7 @@ class VideoProcessor(VideoTransformerBase):
         return True
 
     def _process_frame(self, img):
+        print("🔎 Procesando frame con YOLO...")  # LOG de depuración
         results = model(img, imgsz=320, verbose=False)[0]
         annotated = img.copy()
 
@@ -113,18 +114,13 @@ class VideoProcessor(VideoTransformerBase):
             else:
                 zona = "derecha"
 
-            box_width = x2 - x1
-            ratio_w = box_width / w_img
-            box_height = y2 - y1
-            ratio_h = box_height / h_img
-
             if cls == "person":
                 count_personas += 1
                 if D is not None:
                     distancias_personas.append(D)
                     if self._beep_progresivo(D, "person"):
                         trigger_beep = True
-                if (D is not None and D < 2.0) or ratio_w > 0.45 or ratio_h > 0.60:
+                if (D is not None and D < 2.0):
                     alarma = True
             else:
                 count_vehiculos += 1
@@ -132,7 +128,7 @@ class VideoProcessor(VideoTransformerBase):
                     distancias_vehiculos.append(D)
                     if self._beep_progresivo(D, "vehiculo"):
                         trigger_beep = True
-                if (D is not None and D < 3.0) or ratio_h > 0.60:
+                if (D is not None and D < 3.0):
                     alarma = True
 
             color = (0, 255, 0)
@@ -153,13 +149,7 @@ class VideoProcessor(VideoTransformerBase):
         if alarma:
             resumen.append("🚨 ALARMA: objeto o señal cerca")
         resumen.append(f"👥 Personas: {count_personas}")
-        if distancias_personas:
-            resumen.append("   Distancias: " + ", ".join(f"{d:.2f}m" for d in distancias_personas))
         resumen.append(f"🚗 Vehículos: {count_vehiculos}")
-        if distancias_vehiculos:
-            resumen.append("   Distancias: " + ", ".join(f"{d:.2f}m" for d in distancias_vehiculos))
-        if not resumen:
-            resumen = ["❓ Nada detectado"]
 
         try:
             while not self.summary_queue.empty():
@@ -169,12 +159,12 @@ class VideoProcessor(VideoTransformerBase):
             pass
 
         self.last_result = annotated
+        print("✅ Frame procesado y anotado")  # LOG de depuración
 
     def transform(self, frame: av.VideoFrame) -> av.VideoFrame:
         img = frame.to_ndarray(format="bgr24")
         if self.future is None or self.future.done():
             self.future = self.executor.submit(self._process_frame, img.copy())
-        # Devuelve el último resultado procesado si existe, si no el frame original
         if self.last_result is not None:
             return av.VideoFrame.from_ndarray(self.last_result, format="bgr24")
         else:
@@ -224,5 +214,6 @@ if webrtc_ctx and webrtc_ctx.state.playing and webrtc_ctx.video_processor:
             beep_box.audio(BEEP_WAV, format="audio/wav", start_time=0)
 else:
     st.warning("Esperando cámara… Asegúrate de permitir permisos y que el sitio esté en HTTPS.")
+
 
 
