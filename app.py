@@ -53,7 +53,6 @@ def estimate_distance(size_px, H_real_m, focal_px):
     if focal_px <= 0 or size_px <= 0:
         return None
     return (H_real_m * focal_px) / size_px
-
 class VideoProcessor(VideoTransformerBase):
     def __init__(self):
         self.last_beep_time = 0.0
@@ -174,7 +173,6 @@ class VideoProcessor(VideoTransformerBase):
             pass
 
         return av.VideoFrame.from_ndarray(annotated, format="bgr24")
-
 col1, col2 = st.columns([2, 1])
 with col1:
     webrtc_ctx = webrtc_streamer(
@@ -196,4 +194,28 @@ with col1:
         },
         video_html_attrs={
             "autoPlay": True,
-            "muted
+            "muted": True,
+            "playsinline": True,
+            "controls": False
+        },
+    )
+
+with col2:
+    st.subheader("Resumen en tiempo real")
+    summary_box = st.empty()
+    beep_box = st.empty()
+    st.caption("Permite acceso a la cámara. Usa HTTPS y un navegador moderno (Chrome/Edge/Firefox).")
+
+if webrtc_ctx and webrtc_ctx.state.playing and webrtc_ctx.video_processor:
+    vp = webrtc_ctx.video_processor
+    while True:
+        try:
+            data = vp.summary_queue.get(timeout=0.2)
+        except queue.Empty:
+            break
+        summary_box.text(data["text"])
+        if data.get("beep"):
+            beep_box.audio(BEEP_WAV, format="audio/wav", start_time=0)
+else:
+    st.warning("Esperando cámara… Asegúrate de permitir permisos y que el sitio esté en HTTPS.")
+
