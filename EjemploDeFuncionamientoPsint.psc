@@ -2,30 +2,30 @@ Algoritmo DeteccionProximidad
 	// ============================
 	// INICIO
 	// ============================
-	Escribir 'INICIO: Importar librerías de visión, sonido y web'
-	Escribir '-Importar modelo de visión por computadora IA (YOLOV8)'
+	Escribir 'INICIO: Importar librerÃ­as de visiÃ³n, sonido y web'
+	Escribir '-Importar modelo de visiÃ³n por computadora IA (YOLOV8)'
 	// ============================
 	// Definir variables
 	// ============================
 	Escribir "============================"
-	Escribir 'Variables definidas: alturas reales, focal cámara'
+	Escribir 'Variables definidas: alturas reales, focal cÃ¡mara'
 	Escribir "-altura_persona <- 1.65(UN PROMEDIO)"
 	Escribir "-altura_carro <- 1.80"
-	Escribir "-focal_pixeles <- 333.33 (FOCAL DE UNA CÁMARA DE CELULAR)"
+	Escribir "-focal_pixeles <- 333.33 (FOCAL DE UNA CÃMARA DE CELULAR)"
 	
 	// ============================
 	// DEFINIR OPERACIONES
 	// ============================
 	Escribir "============================"
 	Escribir 'Operaciones disponibles:'
-	Escribir '- Detectar cámara'
-	Escribir '- Calcular tamaño pixeles del objeto vs pixeles de la imagen total'
+	Escribir '- Detectar cÃ¡mara'
+	Escribir '- Calcular tamaÃ±o pixeles del objeto vs pixeles de la imagen total'
 	Escribir '- Estimar distancia'
 	Escribir '- Pitidos, contadores y cajas de colores  progresivas"
 	Escribir "============================"
 	
 	// ============================
-	//   INPUT: Variables de imagen recibidas y DECISIÓN 1: Confianza
+	//   INPUT: Variables de imagen recibidas y DECISIÃ“N 1: Confianza
 	// ============================
 	
 	Escribir "YOLO Ingresa confianza del objeto (alta)>70% / (baja)<70%: '
@@ -36,12 +36,12 @@ Algoritmo DeteccionProximidad
     Definir count_personas Como Entero
 	
     Escribir "=== INICIO DEL PROCESO ==="
-    Escribir "La máquina recibe un frame y empieza a analizar."
+    Escribir "La mÃ¡quina recibe un frame y empieza a analizar."
 	
     count_personas <- 0
 	
     Para i <- 1 Hasta 3 Con Paso 1 Hacer
-        Escribir "---- Iteración ", i, " del FOR ----"
+        Escribir "---- IteraciÃ³n ", i, " del FOR ----"
         Escribir "El FOR garantiza que cada objeto se analice uno por uno."
 		
         Escribir "Ingresa confianza (ej: 0.7): "
@@ -51,18 +51,18 @@ Algoritmo DeteccionProximidad
         Escribir "Ingresa distancia estimada en metros: "
         Leer distancia
 		Escribir "----------------------------------------"
-        Escribir "IF: ¿La confianza es suficiente (>= 0.70)?"
+        Escribir "IF: Â¿La confianza es suficiente (>= 0.70)?"
         Si confianza < 0.70 Entonces
-            Escribir "Decisión: Confianza baja (<0.70). Se DESCARTA la detección."
+            Escribir "DecisiÃ³n: Confianza baja (<0.70). Se DESCARTA la detecciÃ³n."
         Sino
-            Escribir "Decisión: Confianza suficiente (>=0.70). Se ANALIZA el objeto."
+            Escribir "DecisiÃ³n: Confianza suficiente (>=0.70). Se ANALIZA el objeto."
 			
-            Escribir "IF: ¿La clase es persona?"
+            Escribir "IF: Â¿La clase es persona?"
             Si clase = "persona" Entonces
                 count_personas <- count_personas + 1
-                Escribir "Decisión: Es una PERSONA. Contador de personas = ", count_personas
+                Escribir "DecisiÃ³n: Es una PERSONA. Contador de personas = ", count_personas
 				
-                Escribir "IF/ELSE: Evaluación de distancia para PERSONA."
+                Escribir "IF/ELSE: EvaluaciÃ³n de distancia para PERSONA."
                 Si distancia < 2 Entonces
                     Escribir "Resultado: Persona MUY CERCA (<2m). ALERTA Y CAJA ROJA."
                 Sino
@@ -78,19 +78,19 @@ Algoritmo DeteccionProximidad
                 FinSi
 				
             Sino
-                Escribir "Decisión: No es persona, se asume VEHÍCULO."
+                Escribir "DecisiÃ³n: No es persona, se asume VEHÃCULO."
 				
-                Escribir "IF/ELSE: Evaluación de distancia para VEHÍCULO."
+                Escribir "IF/ELSE: EvaluaciÃ³n de distancia para VEHÃCULO."
                 Si distancia < 3 Entonces
-                    Escribir "Resultado: Vehículo MUY CERCA (<3m). ALERTA Y CAJAROJA."
+                    Escribir "Resultado: VehÃ­culo MUY CERCA (<3m). ALERTA Y CAJAROJA."
                 Sino
                     Si distancia < 6 Entonces
-                        Escribir "Resultado: Vehículo a distancia MEDIA (<6m). ALERTA Y CAJA NARANJA."
+                        Escribir "Resultado: VehÃ­culo a distancia MEDIA (<6m). ALERTA Y CAJA NARANJA."
                     Sino
                         Si distancia < 10 Entonces
-                            Escribir "Resultado: Vehículo LEJANO (<10m). ALERTA y CAJA AMARILLA."
+                            Escribir "Resultado: VehÃ­culo LEJANO (<10m). ALERTA y CAJA AMARILLA."
                         Sino
-                            Escribir "Resultado: Vehículo SEGURO (>=10m). CAJA VERDE."
+                            Escribir "Resultado: VehÃ­culo SEGURO (>=10m). CAJA VERDE."
                         FinSi
                     FinSi
                 FinSi
@@ -100,8 +100,8 @@ Algoritmo DeteccionProximidad
     FinPara
 	
     Escribir "=== RESULTADOS ==="
-    Escribir "Personas detectadas, y respectivo audio diciendo el número: ", count_personas
-    Escribir "Cada IF/ELSE mostró cómo la máquina decide según confianza, clase y distancia."
+    Escribir "Personas detectadas, y respectivo audio diciendo el nÃºmero: ", count_personas
+    Escribir "Cada IF/ELSE mostrÃ³ cÃ³mo la mÃ¡quina decide segÃºn confianza, clase y distancia."
     Escribir "=== FIN DEL PROCESO ==="
 
 FinAlgoritmo
