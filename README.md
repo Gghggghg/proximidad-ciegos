@@ -1,1 +1,1 @@
-# proximidad-ciegos
+# AnomalyDetector en Python
