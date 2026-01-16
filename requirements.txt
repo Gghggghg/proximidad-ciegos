@@ -1,12 +1,9 @@
-streamlit
-streamlit-webrtc
-opencv-python-headless
-numpy
-pillow
-torch
-torchvision
-ultralytics
-av
+opencv-python==4.8.0.76
+numpy==1.26.4
+streamlit==1.32.0
+streamlit-webrtc==0.47.1
+ultralytics==8.1.0
+pygame==2.5.2
 
 
 
